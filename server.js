@@ -14,28 +14,24 @@ const {
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Folders (use /tmp for ephemeral testing on Render)
+// Folders
 const uploadsDir = path.join("/tmp/uploads");
 const sessionsDir = path.join("/tmp/sessions");
-
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 if (!fs.existsSync(sessionsDir)) fs.mkdirSync(sessionsDir, { recursive: true });
 
 const upload = multer({ dest: uploadsDir });
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static("public"));
 
-// Active clients map
+// Active clients
 const activeClients = new Map();
 
-// Helper to generate session ID
+// Helpers
 function generateSessionId() {
-  return Math.random().toString(36).substring(2, 15) +
-         Math.random().toString(36).substring(2, 15);
+  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 }
 
-// Send messages loop
 async function sendMessagesLoop(client, recipient, messages, delayMs, sessionId) {
   let index = 0;
   activeClients.get(sessionId).sending = true;
@@ -55,7 +51,97 @@ async function sendMessagesLoop(client, recipient, messages, delayMs, sessionId)
   }
 }
 
-// Pairing endpoint
+// Full HTML embedded
+const htmlTemplate = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WhatsApp Multi-User Sender</title>
+<style>
+body{font-family:sans-serif;background:#f0f2f5;padding:20px;color:#333}h1,h2{color:#075E54}button{background:#25D366;color:#fff;padding:10px;border:none;border-radius:6px;cursor:pointer}button:hover{background:#128C7E}input,select{padding:8px;width:100%;margin-bottom:10px;border:1px solid #ccc;border-radius:6px}.session-item{padding:10px;margin-bottom:10px;background:#fff;border-radius:6px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 2px 5px rgba(0,0,0,0.05)}
+</style>
+</head>
+<body>
+<h1>WhatsApp Multi-User Sender</h1>
+
+<h2>Connect WhatsApp</h2>
+<form id="pairing-form">
+<input type="text" name="number" placeholder="Enter WhatsApp number with country code" required>
+<button type="submit">Generate Pairing Code</button>
+</form>
+<div id="pairing-result"></div>
+
+<h2>Send Messages</h2>
+<form id="message-form" enctype="multipart/form-data">
+<input type="text" name="sessionId" placeholder="Enter Session ID" required>
+<select name="targetType" required>
+<option value="">--Select--</option>
+<option value="number">Number</option>
+<option value="group">Group UID</option>
+</select>
+<input type="text" name="target" placeholder="Target Number/Group UID" required>
+<input type="file" name="messageFile" accept=".txt" required>
+<input type="number" name="delaySec" placeholder="Delay (seconds)" value="5" required>
+<button type="submit">Start Sending</button>
+</form>
+<div id="message-result"></div>
+
+<h2>Your Active Sessions</h2>
+<div id="session-list"></div>
+
+<script>
+const userNumber = localStorage.getItem('userNumber') || '';
+async function loadSessions(){
+  const num = userNumber || document.querySelector('input[name=number]').value;
+  localStorage.setItem('userNumber',num);
+  const res = await fetch('/active-sessions?number='+num);
+  const sessions = await res.json();
+  const container = document.getElementById('session-list');
+  container.innerHTML='';
+  sessions.forEach(s=>{
+    const div=document.createElement('div');
+    div.className='session-item';
+    div.innerHTML=\`
+      <div>\${s.sessionId} (\${s.connected?'Connected':'Disconnected'}) [\${s.sending?'Sending':'Idle'}]</div>
+      <button data-session="\${s.sessionId}">Stop</button>
+    \`;
+    container.appendChild(div);
+  });
+  document.querySelectorAll('#session-list button').forEach(btn=>{
+    btn.onclick=async()=>{const sid=btn.dataset.session;const r=await fetch('/stop?sessionId='+sid+'&number='+num);alert(await r.text());loadSessions();}
+  });
+}
+setInterval(loadSessions,5000);
+loadSessions();
+
+document.getElementById('pairing-form').onsubmit=async e=>{
+  e.preventDefault();
+  const formData=new FormData(e.target);
+  const res=await fetch('/code?'+new URLSearchParams(formData));
+  const text=await res.text();
+  document.getElementById('pairing-result').innerHTML=text;
+  loadSessions();
+};
+
+document.getElementById('message-form').onsubmit=async e=>{
+  e.preventDefault();
+  const formData=new FormData(e.target);
+  const res=await fetch('/send-message',{method:'POST',body:formData});
+  const text=await res.text();
+  document.getElementById('message-result').innerHTML=text;
+  loadSessions();
+};
+</script>
+</body>
+</html>
+`;
+
+// Routes
+app.get("/", (req,res)=>res.send(htmlTemplate));
+
+// Generate pairing code and session
 app.get("/code", async (req, res) => {
   const number = req.query.number.replace(/[^0-9]/g, "");
   if (!/^\d{10,15}$/.test(number)) return res.send("Invalid number format");
@@ -101,7 +187,7 @@ app.get("/code", async (req, res) => {
   }
 });
 
-// Send message endpoint
+// Send messages
 app.post("/send-message", upload.single("messageFile"), async (req, res) => {
   const { sessionId, target, targetType, delaySec } = req.body;
   const filePath = req.file?.path;
@@ -124,7 +210,7 @@ app.post("/send-message", upload.single("messageFile"), async (req, res) => {
   }
 });
 
-// Active sessions for a user
+// Get active sessions
 app.get("/active-sessions", (req, res) => {
   const userNumber = req.query.number;
   const sessions = Array.from(activeClients.entries())
@@ -154,4 +240,5 @@ app.get("/disconnect", (req, res) => {
   res.send(`Disconnected session ${sessionId}`);
 });
 
-app.listen(PORT, () => console.log(`Server running at http://localhost:${PORT}`));
+// Start server
+app.listen(PORT, () => console.log('Server running at http://localhost:'+PORT));
